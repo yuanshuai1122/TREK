@@ -43,10 +43,23 @@ jobs:
         run: |
           # GHCR 只接受全小写的路径,而 GitHub 用户名可以有大写
           echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-          # 版本号取上游 package.json 的版本 + 短 commit,便于对应到具体源码
-          VERSION="$(jq -r .version package.json)-$(git rev-parse --short HEAD)"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "构建版本: $VERSION"
+
+          BASE="$(jq -r .version package.json)"
+          SHA="$(git rev-parse --short HEAD)"
+
+          # 镜像 tag 带 commit —— 溯源靠它,能精确定位到是哪次构建
+          echo "tag=${BASE}-${SHA}" >> "$GITHUB_OUTPUT"
+
+          # APP_VERSION 必须是【纯数字点分】版本,不能带 commit 后缀。
+          # TREK 的 compareVersions 是自己实现的,不是 semver:
+          #   v.split('-pre.')             只认 "-pre." 这一种后缀
+          #   base.split('.').map(Number)  "3.4.1-3c8988d" → [3, 4, NaN]
+          #   pb.parts[i] || 0             NaN 是 falsy → 被当成 0
+          # 结果:带后缀时 TREK 认为自己在 3.4.0,上游 3.4.1 永远"有可用更新",
+          # 提示一直挂着消不掉。用 + 号也不行 —— 它不是 semver,一样切不出来。
+          echo "app_version=${BASE}" >> "$GITHUB_OUTPUT"
+
+          echo "镜像 tag: ${BASE}-${SHA}   APP_VERSION: ${BASE}"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -63,10 +76,10 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ steps.meta.outputs.owner }}/trek:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/trek:${{ steps.meta.outputs.tag }}
             ghcr.io/${{ steps.meta.outputs.owner }}/trek:latest
           build-args: |
-            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_VERSION=${{ steps.meta.outputs.app_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -75,5 +88,5 @@ jobs:
           echo "### 镜像构建完成" >> $GITHUB_STEP_SUMMARY
           echo '在【首尔服务器】上执行升级:' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo 'bash /opt/trek/bin/upgrade.sh ${{ steps.meta.outputs.version }}' >> $GITHUB_STEP_SUMMARY
+          echo 'bash /opt/trek/bin/upgrade.sh ${{ steps.meta.outputs.tag }}' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
