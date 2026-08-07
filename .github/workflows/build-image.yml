@@ -1,0 +1,79 @@
+# ============================================================================
+# 放到你 fork 的仓库里: .github/workflows/build-image.yml
+#
+# 从【你自己 fork 的源码】构建镜像并推到 GHCR。
+# 源码是唯一真相,镜像只是构建产物 —— 你随时可以改 client/ 或 server/ 下的代码,
+# 推上来就会构建出带你改动的镜像。构建跑在 GitHub 的机器上,
+# 首尔那台 2G 内存的机器一点力都不用出(Vite 打包 React 19 很吃内存,
+# 2G 上大概率 OOM)。
+#
+# 首次使用:
+#   1. Settings → Actions → General → Workflow permissions 选 "Read and write"
+#   2. 手动跑一次 (Actions → Build TREK image → Run workflow)
+#   3. 跑完在仓库右侧 Packages 里找到 trek,Package settings → 改成 Public
+#      (镜像里只有 AGPL 源码,不含任何密钥;设成 Public 后首尔拉取免登录)
+# ============================================================================
+name: Build TREK image
+
+on:
+  workflow_dispatch:        # 手动触发
+  push:
+    branches: [main]        # 用 GitHub 的 "Sync fork" 同步上游后会自动触发
+    paths-ignore:
+      - '**.md'
+      - 'wiki/**'
+      - 'docs/**'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本号和小写 owner
+        id: meta
+        run: |
+          # GHCR 只接受全小写的路径,而 GitHub 用户名可以有大写
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          # 版本号取上游 package.json 的版本 + 短 commit,便于对应到具体源码
+          VERSION="$(jq -r .version package.json)-$(git rev-parse --short HEAD)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "构建版本: $VERSION"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # 首尔是 x86,只构建 amd64,省一半时间
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/trek:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/trek:latest
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 输出部署命令
+        run: |
+          echo "### 镜像构建完成" >> $GITHUB_STEP_SUMMARY
+          echo '在【首尔服务器】上执行升级:' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo 'bash /opt/trek/bin/upgrade.sh ${{ steps.meta.outputs.version }}' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
